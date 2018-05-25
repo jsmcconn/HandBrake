@@ -75,7 +75,6 @@ static int decsubInit( hb_work_object_t * w, hb_job_t * job )
 static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
 {
     hb_buffer_t * b = buf;
-    uint8_t done = 0;
 
     while ( b )
     {
@@ -84,126 +83,173 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
         while (ii + 3 <= b->size)
         {
             // Each buffer is composed of 1 or more segments.
-            // struct buffer
+            // struct segment_header_s
             // {
-            //     char[2] header;
-            //     uint32 pts1;
-            //     uint32 pts2;
-            //     byte sectionType;
-            //     uint16 dataLength;
-            //     byte[dataLength] data;
+            //     char[2]             magic_number;           // pre stripped
+            //     uint32              presentation_timestamp; // pre stripped
+            //     uint32              decoding_timestamp;     // pre stripped
+            //     uint8               segment_type;
+            //     uint16              segment_size;
+            //     uint8[segment_size] data;
             // }
             //
-            // We want to modify height and offset values in the PRESENTATION (0x16)
-            // and SIZE (0x17) segment types.
+            // We want to modify dimension and offset values in the PCS (0x16)
+            // and WDS (0x17) segment types.
 
-            uint8_t type;
-            int len;
+            uint8_t segment_type;
+            int segment_size;
 
-            type = b->data[ii++];
+            segment_type = b->data[ii+0];
 
-            len = ((int)b->data[ii] << 8) + b->data[ii+1];
-            ii += 2;
+            segment_size = ((int)b->data[ii+1] << 8) + b->data[ii+2];
+            ii += 3;
 
-            if (type == 0x16 && ii + len <= b->size)
+            if (segment_type == 0x16 && ii + segment_size <= b->size)
             {
-                // struct presentationData
+                // struct presentation_composition_segment
                 // {
-                //     uint16 subtitleWidth;
-                //     uint16 subtitleHeight;
-                //     byte frameRate;
-                //     uint16 subtitleIndex;
+                //     uint16 video_width;
+                //     uint16 video_height;
+                //     uint8  frame_rate;
+                //     uint16 composition_number;
                 //
-                //     byte unknown0;
-                //     uint16 unknown0;
-                //     byte numPresBlocks;
+                //     uint8  composition_state;
+                //     uint8  palette_update_flag;
+                //     uint8  palette_id;
+                //     uint8  num_composition_objects;
                 //
-                //     presBlock[numPresBlocks] presBlocks;
+                //     comp_ob_struct[num_composition_objects] composition_objects;
                 // }
-                //
-                // In this segment we want to change the subtitleHeight value
-                // to reflect the job y crop.
 
                 int kk, jj = ii;
-                uint16_t prev_h, new_h;
-                uint8_t num_blocks;
+                uint16_t video_width, video_height;
+                uint8_t num_composition_objects;
 
-                // Set the subtitle width based on the job crop
-                prev_h = ((int)b->data[jj+2] << 8) + b->data[jj+3];
-                new_h = prev_h - (pv->job->crop[0] + pv->job->crop[1]);
-                b->data[jj+2] = new_h >> 8;
-                b->data[jj+3] = new_h & 0xFF;
+                // Set the video width/height based on the job
+                video_width = ((int)b->data[jj+0] << 8) + b->data[jj+1];
+                video_height = ((int)b->data[jj+2] << 8) + b->data[jj+3];
 
-                num_blocks = (int)b->data[jj+10];
-                jj = jj+11;
-                kk = 0;
-                while (kk < num_blocks && jj + 8 <= b->size )
+                if (video_width < pv->job->width || video_height < pv->job->height)
                 {
-                    // struct presBlock
+                    hb_log("[warning] PGS subtitle PCS found with dimensions %Xx%X", video_width, video_height);
+                }
+
+                b->data[jj+0] = pv->job->width >> 8;
+                b->data[jj+1] = pv->job->width & 0xFF;
+                b->data[jj+2] = pv->job->height >> 8;
+                b->data[jj+3] = pv->job->height & 0xFF;
+
+                num_composition_objects = b->data[jj+10];
+                jj += 11;
+                kk = 0;
+                while (kk < num_composition_objects && jj + 8 <= b->size )
+                {
+                    // struct comp_ob_struct
                     // {
-                    //     byte unknown0;
-                    //     byte unknown1;
-                    //     byte unknown2;
-                    //     byte forced;
-                    //     uint16 xPosition;
-                    //     uint16 yPosition;
+                    //     uint16 object_id;
+                    //     uint8  window_id;
+                    //     uint8  object_cropped_flag; // 0x40 forced
+                    //     uint16 object_horizontal_position;
+                    //     uint16 object_vertical_position;
+                    //
+                    //     // The following are only present if
+                    //     // object_cropped_flag == 0x40
+                    //     uint16 object_cropping_horizontal_position;
+                    //     uint16 object_cropping_vertical_position;
+                    //     uint16 object_cropping_width;
+                    //     uint16 object_cropping_height;
+                    // }
+
+                    uint8_t object_cropped_flag;
+                    uint16_t object_horizontal_position, object_vertical_position;
+
+                    object_cropped_flag = b->data[jj+3];
+
+                    // Set the object positions based on the job
+                    object_horizontal_position = ((int)b->data[jj+4] << 8) + b->data[jj+5];
+                    object_vertical_position = ((int)b->data[jj+6] << 8) + b->data[jj+7];
+
+                    b->data[jj+4] = (object_horizontal_position - pv->job->crop[2]) >> 8;
+                    b->data[jj+5] = (object_horizontal_position - pv->job->crop[2]) & 0xFF;
+                    b->data[jj+6] = (object_vertical_position - pv->job->crop[0]) >> 8;
+                    b->data[jj+7] = (object_vertical_position - pv->job->crop[0]) & 0xFF;
+
+                    if (object_cropped_flag == 0x80 && jj + 16 <= b->size)
+                    {
+                        uint16_t object_cropping_horizontal_position, object_cropping_vertical_position;
+
+                        // Set the object cropping positions based on the job
+                        object_cropping_horizontal_position = ((int)b->data[jj+8] << 8) + b->data[jj+9];
+                        object_cropping_vertical_position = ((int)b->data[jj+10] << 8) + b->data[jj+11];
+
+                        b->data[jj+8] = (object_cropping_horizontal_position - pv->job->crop[2]) >> 8;
+                        b->data[jj+9] = (object_cropping_horizontal_position - pv->job->crop[2]) & 0xFF;
+                        b->data[jj+10] = (object_cropping_vertical_position - pv->job->crop[0]) >> 8;
+                        b->data[jj+11] = (object_cropping_vertical_position - pv->job->crop[0]) & 0xFF;
+
+                        jj += 8;
+                    }
+                    jj += 8;
+                    kk += 1;
+                }
+            }
+            else if (segment_type == 0x16 && ii + segment_size <= b->size)
+            {
+                // struct window_definition_segment
+                // {
+                //     uint8 num_window_definition_objects;
+                //
+                //     wd_struct[num_window_definition_objects] wd_objects;
+                // }
+
+                int kk, jj = ii;
+                uint8_t num_window_definition_objects;
+
+                num_window_definition_objects = b->data[jj+0];
+
+                jj += 1;
+                kk = 0;
+                while (kk < num_window_definition_objects && jj + 9 <= b->size )
+                {
+                    // struct wd_struct
+                    // {
+                    //     uint8  window_id;
+                    //     uint16 window_horizontal_position;
+                    //     uint16 window_vertical_position;
+                    //     uint16 window_width;
+                    //     uint16 window_height;
                     // }
                     //
                     // In this block we want to change the yPosition to reflect
                     // the job y crop.
 
-                    uint16_t old_y_pos, new_y_pos;
+                    uint16_t window_horizontal_position, window_vertical_position,
+                        window_width, window_height;
 
-                    old_y_pos = ((int)b->data[jj+6] << 8) + b->data[jj+7];
-                    new_y_pos = old_y_pos - pv->job->crop[0];
-                    b->data[jj+6] = new_y_pos >> 8;
-                    b->data[jj+7] = new_y_pos & 0xFF;
+                    // Set the window positions based on the job
+                    window_horizontal_position = ((int)b->data[jj+1] << 8) + b->data[jj+2];
+                    window_vertical_position = ((int)b->data[jj+3] << 8) + b->data[jj+4];
 
-                    jj = jj+8;
-                    kk = kk+1;
+                    b->data[jj+1] = (window_horizontal_position - pv->job->crop[2]) >> 8;
+                    b->data[jj+2] = (window_horizontal_position - pv->job->crop[2]) & 0xFF;
+                    b->data[jj+3] = (window_vertical_position - pv->job->crop[0]) >> 8;
+                    b->data[jj+4] = (window_vertical_position - pv->job->crop[0]) & 0xFF;
+
+                    window_width = ((int)b->data[jj+5] << 8) + b->data[jj+6];
+                    window_height = ((int)b->data[jj+5] << 8) + b->data[jj+6];
+
+                    if (window_width + window_horizontal_position > pv->job->width || 
+                        window_height + window_vertical_position > pv->job->height)
+                    {
+                        hb_log("[warning] PGS subtitle WDS exceeds viewport [%d posx, %d posy, %d sizex, %d sizey]",
+                            window_horizontal_position, window_vertical_position, window_width, window_height);
+                    }
+
+                    jj += 9;
+                    kk += 1;
                 }
             }
-            else if (type == 0x16 && ii + len <= b->size)
-            {
-                // struct sizeData
-                // {
-                //     byte numSizeBlocks;
-                //
-                //     sizeBlock[numSizeBlocks] sizeBlocks;
-                // }
-
-                int kk, jj = ii;
-                uint8_t num_blocks;
-                
-                num_blocks = b->data[jj+0];
-                jj = jj+1;
-                kk = 0;
-                while (kk < num_blocks && jj + 9 <= b->size )
-                {
-                    // struct sizeBlock
-                    // {
-                    //     byte blockId;
-                    //     uint16 x;
-                    //     uint16 y;
-                    //     uint16 width;
-                    //     uint16 height;
-                    // }
-                    //
-                    // In this block we want to change the yPosition to reflect
-                    // the job y crop.
-
-                    uint16_t old_y_pos, new_y_pos;
-
-                    old_y_pos = ((int)b->data[jj+3] << 8) + b->data[jj+4];
-                    new_y_pos = old_y_pos - pv->job->crop[0];
-                    b->data[jj+3] = new_y_pos >> 8;
-                    b->data[jj+4] = new_y_pos & 0xFF;
-
-                    jj = jj+9;
-                    kk = kk+1;
-                }
-            }
-            ii += len;
+            ii += segment_size;
         }
         b = b->next;
     }
