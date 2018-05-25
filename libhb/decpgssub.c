@@ -72,9 +72,10 @@ static int decsubInit( hb_work_object_t * w, hb_job_t * job )
     return 0;
 }
 
-static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
+static int crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv, int commit_changes )
 {
     hb_buffer_t * b = buf;
+    int success = 1;
 
     while ( b )
     {
@@ -125,6 +126,11 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
                 uint16_t video_width, video_height;
                 uint8_t num_composition_objects;
 
+                // if (!commit_changes)
+                // {
+                //     hb_log("[PGS Crop] Found Presentation Composition Segment");
+                // }
+
                 // Set the video width/height based on the job
                 video_width = ((int)b->data[jj+0] << 8) + b->data[jj+1];
                 video_height = ((int)b->data[jj+2] << 8) + b->data[jj+3];
@@ -132,12 +138,16 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
                 if (video_width < pv->job->width || video_height < pv->job->height)
                 {
                     hb_log("[warning] PGS subtitle PCS found with dimensions %Xx%X", video_width, video_height);
+                    success = 0;
                 }
 
-                b->data[jj+0] = pv->job->width >> 8;
-                b->data[jj+1] = pv->job->width & 0xFF;
-                b->data[jj+2] = pv->job->height >> 8;
-                b->data[jj+3] = pv->job->height & 0xFF;
+                if ( commit_changes )
+                {
+                    b->data[jj+0] = pv->job->width >> 8;
+                    b->data[jj+1] = pv->job->width & 0xFF;
+                    b->data[jj+2] = pv->job->height >> 8;
+                    b->data[jj+3] = pv->job->height & 0xFF;
+                }
 
                 num_composition_objects = b->data[jj+10];
                 jj += 11;
@@ -169,23 +179,43 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
                     object_horizontal_position = ((int)b->data[jj+4] << 8) + b->data[jj+5];
                     object_vertical_position = ((int)b->data[jj+6] << 8) + b->data[jj+7];
 
-                    b->data[jj+4] = (object_horizontal_position - pv->job->crop[2]) >> 8;
-                    b->data[jj+5] = (object_horizontal_position - pv->job->crop[2]) & 0xFF;
-                    b->data[jj+6] = (object_vertical_position - pv->job->crop[0]) >> 8;
-                    b->data[jj+7] = (object_vertical_position - pv->job->crop[0]) & 0xFF;
-
-                    if (object_cropped_flag == 0x80 && jj + 16 <= b->size)
+                    if ( commit_changes )
                     {
-                        uint16_t object_cropping_horizontal_position, object_cropping_vertical_position;
+                        b->data[jj+4] = (object_horizontal_position - pv->job->crop[2]) >> 8;
+                        b->data[jj+5] = (object_horizontal_position - pv->job->crop[2]) & 0xFF;
+                        b->data[jj+6] = (object_vertical_position - pv->job->crop[0]) >> 8;
+                        b->data[jj+7] = (object_vertical_position - pv->job->crop[0]) & 0xFF;
+                    }
+
+                    if (object_cropped_flag & 0x80 && jj + 16 <= b->size)
+                    {
+                        uint16_t object_cropping_horizontal_position, object_cropping_vertical_position,
+                            object_cropping_width, object_cropping_height;
+
+                        hb_log("[PGS Crop] Cropped object found in PGS subtitle");
 
                         // Set the object cropping positions based on the job
                         object_cropping_horizontal_position = ((int)b->data[jj+8] << 8) + b->data[jj+9];
                         object_cropping_vertical_position = ((int)b->data[jj+10] << 8) + b->data[jj+11];
+                        object_cropping_width = ((int)b->data[jj+12] << 8) + b->data[jj+13];
+                        object_cropping_height = ((int)b->data[jj+14] << 8) + b->data[jj+15];
 
-                        b->data[jj+8] = (object_cropping_horizontal_position - pv->job->crop[2]) >> 8;
-                        b->data[jj+9] = (object_cropping_horizontal_position - pv->job->crop[2]) & 0xFF;
-                        b->data[jj+10] = (object_cropping_vertical_position - pv->job->crop[0]) >> 8;
-                        b->data[jj+11] = (object_cropping_vertical_position - pv->job->crop[0]) & 0xFF;
+                        if (object_cropping_horizontal_position - pv->job->crop[2] + object_cropping_width > pv->job->width || 
+                            object_cropping_vertical_position  - pv->job->crop[0] + object_cropping_height > pv->job->height)
+                        {
+                            hb_log("[warning] PGS cropped object exceeds viewport [%d posx, %d posy, %d sizex, %d sizey]",
+                                object_cropping_horizontal_position, object_cropping_vertical_position,
+                                object_cropping_width, object_cropping_height);
+                            success = 0;
+                        }
+
+                        if ( commit_changes )
+                        {
+                            b->data[jj+8] = (object_cropping_horizontal_position - pv->job->crop[2]) >> 8;
+                            b->data[jj+9] = (object_cropping_horizontal_position - pv->job->crop[2]) & 0xFF;
+                            b->data[jj+10] = (object_cropping_vertical_position - pv->job->crop[0]) >> 8;
+                            b->data[jj+11] = (object_cropping_vertical_position - pv->job->crop[0]) & 0xFF;
+                        }
 
                         jj += 8;
                     }
@@ -193,7 +223,7 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
                     kk += 1;
                 }
             }
-            else if (segment_type == 0x16 && ii + segment_size <= b->size)
+            else if (segment_type == 0x17 && ii + segment_size <= b->size)
             {
                 // struct window_definition_segment
                 // {
@@ -204,6 +234,11 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
 
                 int kk, jj = ii;
                 uint8_t num_window_definition_objects;
+
+                // if (!commit_changes)
+                // {
+                //     hb_log("[PGS Crop] Found Window Definition Segment");
+                // }
 
                 num_window_definition_objects = b->data[jj+0];
 
@@ -229,30 +264,51 @@ static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
                     // Set the window positions based on the job
                     window_horizontal_position = ((int)b->data[jj+1] << 8) + b->data[jj+2];
                     window_vertical_position = ((int)b->data[jj+3] << 8) + b->data[jj+4];
-
-                    b->data[jj+1] = (window_horizontal_position - pv->job->crop[2]) >> 8;
-                    b->data[jj+2] = (window_horizontal_position - pv->job->crop[2]) & 0xFF;
-                    b->data[jj+3] = (window_vertical_position - pv->job->crop[0]) >> 8;
-                    b->data[jj+4] = (window_vertical_position - pv->job->crop[0]) & 0xFF;
-
                     window_width = ((int)b->data[jj+5] << 8) + b->data[jj+6];
-                    window_height = ((int)b->data[jj+5] << 8) + b->data[jj+6];
+                    window_height = ((int)b->data[jj+7] << 8) + b->data[jj+8];
 
-                    if (window_width + window_horizontal_position > pv->job->width || 
-                        window_height + window_vertical_position > pv->job->height)
+                    if (window_horizontal_position - pv->job->crop[2] + window_width > pv->job->width || 
+                        window_vertical_position  - pv->job->crop[0] + window_height > pv->job->height)
                     {
                         hb_log("[warning] PGS subtitle WDS exceeds viewport [%d posx, %d posy, %d sizex, %d sizey]",
                             window_horizontal_position, window_vertical_position, window_width, window_height);
+                        success = 0;
+                    }
+
+                    if ( commit_changes )
+                    {
+                        b->data[jj+1] = (window_horizontal_position - pv->job->crop[2]) >> 8;
+                        b->data[jj+2] = (window_horizontal_position - pv->job->crop[2]) & 0xFF;
+                        b->data[jj+3] = (window_vertical_position - pv->job->crop[0]) >> 8;
+                        b->data[jj+4] = (window_vertical_position - pv->job->crop[0]) & 0xFF;
                     }
 
                     jj += 9;
                     kk += 1;
                 }
             }
+            // else if (segment_type == 0x14 && !commit_changes)
+            // {
+            //     hb_log("[PGS Crop] Found Palette Definition Segment");
+            // }
+            // else if (segment_type == 0x15 && !commit_changes)
+            // {
+            //     hb_log("[PGS Crop] Found Object Definition Segment");
+            // }
+            // else if (segment_type == 0x80 && !commit_changes)
+            // {
+            //     hb_log("[PGS Crop] Found End of Display Set Segment");
+            // }
+            // else if (!commit_changes)
+            // {
+            //     hb_log("[PGS Crop] Found Unknown Segment");
+            // }
             ii += segment_size;
         }
         b = b->next;
     }
+
+    return success;
 }
 
 static void make_empty_pgs( hb_buffer_t * buf )
@@ -525,7 +581,16 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                  * merge them. */
 
                 // Update the pgs stream to reflect the job image crop
-                crop_pgs(hb_buffer_list_head(&pv->list_pass), pv);
+                // hb_log("[PGS Crop] Validating PGS subtitle stream crop");
+                if ( crop_pgs(hb_buffer_list_head(&pv->list_pass), pv, 0) )
+                {
+                    // hb_log("[PGS Crop] Cropping PGS subtitle stream");
+                    crop_pgs(hb_buffer_list_head(&pv->list_pass), pv, 1);
+                }
+                else
+                {
+                    hb_log("[warning] PGS subtitle cropping disabled for stream");
+                }
 
                 if (hb_buffer_list_count(&pv->list_pass) == 1)
                 {
