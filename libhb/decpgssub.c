@@ -72,191 +72,142 @@ static int decsubInit( hb_work_object_t * w, hb_job_t * job )
     return 0;
 }
 
-
 static void crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv )
 {
     hb_buffer_t * b = buf;
     uint8_t done = 0;
 
-    // Each buffer is composed of 1 or more segments.
-    // Segment header is:
-    //      type   - 1 byte
-    //      length - 2 bytes
-    // We want to modify the presentation segment which is type 0x16
-    //
-    // Note that every pgs display set is required to have a presentation
-    // segment, so we will only have to look at one display set.
-    while ( b && !done )
+    while ( b )
     {
         int ii = 0;
 
         while (ii + 3 <= b->size)
         {
+            // Each buffer is composed of 1 or more segments.
+            // struct buffer
+            // {
+            //     char[2] header;
+            //     uint32 pts1;
+            //     uint32 pts2;
+            //     byte sectionType;
+            //     uint16 dataLength;
+            //     byte[dataLength] data;
+            // }
+            //
+            // We want to modify height and offset values in the PRESENTATION (0x16)
+            // and SIZE (0x17) segment types.
+
             uint8_t type;
             int len;
-            int segment_len_pos;
 
             type = b->data[ii++];
-            //segment_len_pos = ii;
+
             len = ((int)b->data[ii] << 8) + b->data[ii+1];
             ii += 2;
 
-            switch (type) {
-                case 0x16 : // timesData
-                    {
-                    int jj = ii;
-                    uint8_t frameRate, numTimesBlocks;
-                    uint16_t w, h, subIndex, old_h, new_h;
-                    
-                    // Fix height
-                    old_h = ((int)b->data[jj+2] << 8) + b->data[jj+3];
-                    new_h = old_h - (pv->job->crop[0] + pv->job->crop[1]);
-                    b->data[jj+2] = new_h >> 8;
-                    b->data[jj+3] = new_h & 0xFF;
-                 
-                    w = ((int)b->data[jj+0] << 8) + b->data[jj+1];
-                    h = ((int)b->data[jj+2] << 8) + b->data[jj+3];
-                    frameRate = (int)b->data[jj+4];
-                    subIndex = ((int)b->data[jj+5] << 8) + b->data[jj+6];
-                    numTimesBlocks = (int)b->data[jj+10];
-
-                    jj = jj+11;
-
-                    for (int i = 0; i < numTimesBlocks; i++) {
-                        uint8_t forced;
-                        uint16_t x, y, old_y, new_y;
-
-                        // fix ypos
-                        old_y = ((int)b->data[jj+6] << 8) + b->data[jj+7];
-                        new_y = old_y - pv->job->crop[0];
-                        b->data[jj+6] = new_y >> 8;
-                        b->data[jj+7] = new_y & 0xFF;
-
-                        forced = (int)b->data[jj+3];
-                        x = ((int)b->data[jj+4] << 8) + b->data[jj+5];
-                        y = ((int)b->data[jj+6] << 8) + b->data[jj+7];
-                        hb_log("JSM: Found TIMES section w: %d, h: %d, forced: %d, x: %d, y: %d", w, h, forced, x, y);
-                        jj = jj+8;
-                    }
-                    }
-                    break;
-                case 0x17 : // sizeData
-                    {
-                    int jj = ii;
-                    uint8_t num_blocks;
-                    num_blocks = b->data[jj++];
-
-                    for (int i = 0; i < num_blocks; i++) {
-                        uint8_t bid;
-                        uint16_t x, y, w, h, old_y, new_y;
-                        bid = (int)b->data[jj+0];
-
-                        // fix ypos
-                        old_y = ((int)b->data[jj+3] << 8) + b->data[jj+4];
-                        new_y = old_y - pv->job->crop[0];
-                        b->data[jj+3] = new_y >> 8;
-                        b->data[jj+4] = new_y & 0xFF;
-
-                        x = ((int)b->data[jj+1] << 8) + b->data[jj+2];
-                        y = ((int)b->data[jj+3] << 8) + b->data[jj+4];
-                        w = ((int)b->data[jj+5] << 8) + b->data[jj+6];
-                        h = ((int)b->data[jj+7] << 8) + b->data[jj+8];
-                        hb_log("JSM: Found SIZE section id: %d, x: %d, y: %d, w: %d, h: %d", bid, x, y, w, h);
-                        jj = jj+9;
-                    }
-                    }
-                    break;
-                case 0x14 : 
-                    hb_log("JSM: Found PALETTE section");
-                    break;
-                case 0x15 : 
-                    hb_log("JSM: Found BITMAP section");
-                    break;
-                case 0x80 : 
-                    hb_log("JSM: Found END section");
-                    break;
-                default : 
-                    hb_log("JSM: Found UNKNOWN 0x%02X section", type);
-                    break;
-            }
-            /*
             if (type == 0x16 && ii + len <= b->size)
             {
-                int obj_count;
+                // struct presentationData
+                // {
+                //     uint16 subtitleWidth;
+                //     uint16 subtitleHeight;
+                //     byte frameRate;
+                //     uint16 subtitleIndex;
+                //
+                //     byte unknown0;
+                //     uint16 unknown0;
+                //     byte numPresBlocks;
+                //
+                //     presBlock[numPresBlocks] presBlocks;
+                // }
+                //
+                // In this segment we want to change the subtitleHeight value
+                // to reflect the job y crop.
+
                 int kk, jj = ii;
-                int obj_start;
+                uint16_t prev_h, new_h;
+                uint8_t num_blocks;
 
-                // Skip
-                // video descriptor 5 bytes
-                // composition descriptor 3 bytes
-                // palette update flg 1 byte
-                // palette id ref 1 byte
-                jj += 10;
+                // Set the subtitle width based on the job crop
+                prev_h = ((int)b->data[jj+2] << 8) + b->data[jj+3];
+                new_h = prev_h - (pv->job->crop[0] + pv->job->crop[1]);
+                b->data[jj+2] = new_h >> 8;
+                b->data[jj+3] = new_h & 0xFF;
 
-                // Set number of composition objects to 0
-                obj_count = b->data[jj];
-                //b->data[jj] = 0;
-                jj++;
-                obj_start = jj;
-
-                // And remove all the composition objects
-                for (kk = 0; kk < obj_count; kk++)
+                num_blocks = (int)b->data[jj+10];
+                jj = jj+11;
+                kk = 0;
+                while (kk < num_blocks && jj + 8 <= b->size )
                 {
-                    uint16_t ob_id;
-                    uint8_t wind_id;
-                    uint8_t forced;
-                    uint16_t pos_x;
-                    uint16_t pos_y;
+                    // struct presBlock
+                    // {
+                    //     byte unknown0;
+                    //     byte unknown1;
+                    //     byte unknown2;
+                    //     byte forced;
+                    //     uint16 xPosition;
+                    //     uint16 yPosition;
+                    // }
+                    //
+                    // In this block we want to change the yPosition to reflect
+                    // the job y crop.
 
-                    ob_id = b->data[jj + 1] | b->data[jj + 0] << 8;
-                    wind_id = b->data[jj + 2];
-                    forced = b->data[jj + 3];
-                    pos_x = b->data[jj + 5] | b->data[jj + 4] << 8;
-                    pos_y = b->data[jj + 7] | b->data[jj + 6] << 8;
-                    // skip
-                    // object id - 2 bytes
-                    // window id - 1 byte
-                    // object/forced flag - 1 byte
-                    // x pos - 2 bytes
-                    // y pos - 2 bytes
-                    
-                    jj += 8;
-                    if (1) //||(crop & 0x80)
-                    {
-                        uint16_t crop_x, crop_y, crop_w, crop_h;
+                    uint16_t old_y_pos, new_y_pos;
 
-                        crop_x = (b->data[jj + 0]  << 8) | b->data[jj + 1];
-                        crop_y = (b->data[jj + 2]  << 8) | b->data[jj + 3];
-                        crop_w = (b->data[jj + 4]  << 8) | b->data[jj + 5];
-                        crop_h = (b->data[jj + 6]  << 8) | b->data[jj + 7];
+                    old_y_pos = ((int)b->data[jj+6] << 8) + b->data[jj+7];
+                    new_y_pos = old_y_pos - pv->job->crop[0];
+                    b->data[jj+6] = new_y_pos >> 8;
+                    b->data[jj+7] = new_y_pos & 0xFF;
 
-                    //hb_log("forced: 0x%02X pos_x: %04X, pos_y: %04X, crop_x: %04X, crop_y: %04X, crop_w: %04X, crop_h: %04X, ", forced, pos_x, pos_y, crop_x, crop_y, crop_w, crop_h);
-
-                        // skip
-                        // crop x - 2 bytes
-                        // crop y - 2 bytes
-                        // crop w - 2 bytes
-                        // crop h - 2 bytes
-                        jj += 8;
-                    }
+                    jj = jj+8;
+                    kk = kk+1;
                 }
-                if (jj < b->size)
+            }
+            else if (type == 0x16 && ii + len <= b->size)
+            {
+                // struct sizeData
+                // {
+                //     byte numSizeBlocks;
+                //
+                //     sizeBlock[numSizeBlocks] sizeBlocks;
+                // }
+
+                int kk, jj = ii;
+                uint8_t num_blocks;
+                
+                num_blocks = b->data[jj+0];
+                jj = jj+1;
+                kk = 0;
+                while (kk < num_blocks && jj + 9 <= b->size )
                 {
-                    //memmove(b->data + obj_start, b->data + jj, b->size - jj);
+                    // struct sizeBlock
+                    // {
+                    //     byte blockId;
+                    //     uint16 x;
+                    //     uint16 y;
+                    //     uint16 width;
+                    //     uint16 height;
+                    // }
+                    //
+                    // In this block we want to change the yPosition to reflect
+                    // the job y crop.
+
+                    uint16_t old_y_pos, new_y_pos;
+
+                    old_y_pos = ((int)b->data[jj+3] << 8) + b->data[jj+4];
+                    new_y_pos = old_y_pos - pv->job->crop[0];
+                    b->data[jj+3] = new_y_pos >> 8;
+                    b->data[jj+4] = new_y_pos & 0xFF;
+
+                    jj = jj+9;
+                    kk = kk+1;
                 }
-                //b->size = obj_start + ( b->size - jj );
-                //done = 1;
-                //len = obj_start - (segment_len_pos + 2);
-                //b->data[segment_len_pos] = len >> 8;
-                //b->data[segment_len_pos+1] = len & 0xff;
-                //break;
-            } */
+            }
             ii += len;
         }
         b = b->next;
     }
 }
-
 
 static void make_empty_pgs( hb_buffer_t * buf )
 {
@@ -519,7 +470,6 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
             if ( w->subtitle->config.dest == PASSTHRUSUB &&
                  hb_subtitle_can_pass( PGSSUB, pv->job->mux ) )
             {
-                hb_log("JSM: PASSTHRUSUB started.");
                 /* PGS subtitles are spread across multiple packets,
                  * 1 per segment.
                  *
@@ -527,12 +477,13 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                  * packet (this is expected by some devices, such as the
                  * WD TV Live).  So if there are multiple packets,
                  * merge them. */
+
+                // Update the pgs stream to reflect the job image crop
+                crop_pgs(hb_buffer_list_head(&pv->list_pass), pv);
+
                 if (hb_buffer_list_count(&pv->list_pass) == 1)
                 {
-                    hb_log("JSM: hb_buffer_list_count(&pv->list_pass) == 1");
                     // packets already merged (e.g. MKV sources)
-                    hb_log("JSM: Calling crop_pgs.");
-                    crop_pgs(hb_buffer_list_head(&pv->list_pass), pv);
                     out = hb_buffer_list_clear(&pv->list_pass);
                 }
                 else
@@ -550,8 +501,6 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
 
                     out = hb_buffer_init( size );
                     data = out->data;
-                    hb_log("JSM: Calling crop_pgs.");
-                    crop_pgs(hb_buffer_list_head(&pv->list_pass), pv);
                     b = hb_buffer_list_head(&pv->list_pass);
                     while (b != NULL)
                     {
