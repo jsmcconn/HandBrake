@@ -584,12 +584,12 @@ static int decsubWork( hb_work_object_t * w, hb_buffer_t ** buf_in,
                 // hb_log("[PGS Crop] Validating PGS subtitle stream crop");
                 if ( crop_pgs(hb_buffer_list_head(&pv->list_pass), pv, 0) )
                 {
-                    // hb_log("[PGS Crop] Cropping PGS subtitle stream");
+                    //hb_log("[PGS Crop] Cropping PGS subtitle stream at %ds (pts %"PRId64")", pts / (90 * 1000), pts);
                     crop_pgs(hb_buffer_list_head(&pv->list_pass), pv, 1);
                 }
                 else
                 {
-                    hb_log("[warning] PGS subtitle cropping disabled for stream");
+                    hb_log("[warning] PGS subtitle cropping disabled for stream at %ds (pts %"PRId64")", pts / (90 * 1000), pts);
                 }
 
                 if (hb_buffer_list_count(&pv->list_pass) == 1)
