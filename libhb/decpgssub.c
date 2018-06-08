@@ -170,6 +170,8 @@ static int crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv)
 
                     object_cropped_flag = b->data[jj+3];
 
+                    // hb_log("[PGS Crop] Comp object cropped object flag %02X", object_cropped_flag);
+
                     // Set the object positions based on the job
                     object_horizontal_position = ((int)b->data[jj+4] << 8) + b->data[jj+5];
                     object_vertical_position = ((int)b->data[jj+6] << 8) + b->data[jj+7];
@@ -184,7 +186,7 @@ static int crop_pgs( hb_buffer_t * buf, hb_work_private_t * pv)
                         uint16_t object_cropping_horizontal_position, object_cropping_vertical_position,
                             object_cropping_width, object_cropping_height;
 
-                        hb_log("[PGS Crop] Cropped object found in PGS subtitle");
+                        // hb_log("[PGS Crop] Cropped object found in PGS subtitle");
 
                         // Set the object cropping positions based on the job
                         object_cropping_horizontal_position = ((int)b->data[jj+8] << 8) + b->data[jj+9];
